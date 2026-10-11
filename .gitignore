@@ -222,3 +222,5 @@ __marimo__/
 token.txt
 .cursor/*
 *ignore*
+logs/
+data/

@@ -1,0 +1,6 @@
+[logging]
+directory = logs
+max_megabytes = 20
+
+[database]
+file = data/workouts.sqlite
