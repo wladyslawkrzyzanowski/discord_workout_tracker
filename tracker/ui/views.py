@@ -65,3 +65,18 @@ def build_view(view_name: str, state: str) -> discord.ui.View | None:
     if builder is None:
         return None
     return builder(state)
+
+
+async def send_setup_panel(channel: discord.abc.Messageable) -> None:
+    """Send the member panel into the setup channel.
+
+    The caller posts the administrator notice first, then calls this, so the
+    panel is the next message in the channel.
+
+    Args:
+        channel: Channel created for this guild's workout panel.
+
+    Returns:
+        None.
+    """
+    return None

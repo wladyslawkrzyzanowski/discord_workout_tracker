@@ -11,6 +11,6 @@ Go to OAuth2<br>
 select "Scopes": `applications.commands` and `bot`<br>
 select "Bot Permissions":
 * easy, unsafe: `Administrator`
-* advanced, safer: `View Channels`, `Send Messages`, `Embed Links`, `Attach Files`, `Read Message History`, `Add Reactions`
+* advanced, safer: `View Channels`, `Manage Channels`, `Send Messages`, `Embed Links`, `Attach Files`, `Read Message History`, `Add Reactions`
 
 Copy link from the bottom, paste into browser and continue to Discord to add Bot to your server.

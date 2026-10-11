@@ -60,6 +60,15 @@ class Database:
             )
             """
         )
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS guild_setups (
+                guild_id INTEGER PRIMARY KEY,
+                category_id INTEGER NOT NULL,
+                channel_id INTEGER NOT NULL
+            )
+            """
+        )
         connection.commit()
         self._connection = connection
 
