@@ -8,6 +8,7 @@ from discord.ext import commands
 
 import tracker.cogs as cogs
 from tracker.db.database import Database
+from tracker.db.member_views import list_member_views
 from tracker.db.views import list_views
 from tracker.ui.views import build_view
 
@@ -80,20 +81,44 @@ class WorkoutBot(commands.Bot):
             None.
         """
         for stored in list_views(self.database):
-            view = build_view(stored.view_name, stored.state)
-            if view is None:
-                log.warning(
-                    "No view registered for %s on message %s",
-                    stored.view_name,
-                    stored.message_id,
-                )
-                continue
-            self.add_view(view, message_id=stored.message_id)
-            log.info(
-                "Restored view %s for guild %s",
+            self._add_stored_view(
                 stored.view_name,
+                stored.state,
+                stored.message_id,
                 stored.guild_id,
             )
+        for stored in list_member_views(self.database):
+            self._add_stored_view(
+                stored.view_name,
+                stored.payload,
+                stored.message_id,
+                stored.guild_id,
+            )
+
+    def _add_stored_view(
+        self,
+        view_name: str,
+        state: str,
+        message_id: int,
+        guild_id: int,
+    ) -> None:
+        """Register one rebuilt view for a message.
+
+        Args:
+            view_name: Registry name of the view class.
+            state: Text or JSON saved with the view.
+            message_id: Discord message that holds the components.
+            guild_id: Guild that contains the message. Used only in the log.
+
+        Returns:
+            None.
+        """
+        view = build_view(view_name, state)
+        if view is None:
+            log.warning("No view registered for %s on message %s", view_name, message_id)
+            return
+        self.add_view(view, message_id=message_id)
+        log.info("Restored view %s for guild %s", view_name, guild_id)
 
     async def on_ready(self) -> None:
         """Log the connected bot user.
@@ -106,10 +131,13 @@ class WorkoutBot(commands.Bot):
         log.info("Logged in as %s", self.user)
 
     async def close(self) -> None:
-        """Close the database, then disconnect the gateway.
+        """Disconnect the gateway, then close the database.
+
+        Cogs stop their background tasks while the gateway closes, and those
+        tasks still read the database.
 
         Returns:
             None.
         """
-        self.database.close()
         await super().close()
+        self.database.close()

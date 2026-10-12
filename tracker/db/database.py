@@ -85,6 +85,18 @@ class Database:
             )
             """
         )
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS member_views (
+                message_id INTEGER PRIMARY KEY,
+                channel_id INTEGER NOT NULL,
+                guild_id INTEGER NOT NULL,
+                user_id INTEGER NOT NULL,
+                view_name TEXT NOT NULL,
+                payload TEXT NOT NULL
+            )
+            """
+        )
         connection.commit()
         self._connection = connection
 

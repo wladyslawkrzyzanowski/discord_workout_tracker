@@ -8,14 +8,16 @@ The Interaction object itself is not stored.
 
 import logging
 import re
+import sqlite3
 from collections.abc import Callable
-from datetime import datetime
+from datetime import datetime, timezone
 
 import discord
 
 from tracker.db.database import Database
 from tracker.db.forums import get_member_forum, save_member_forum
 from tracker.db.guilds import GuildSetup, get_guild_setup
+from tracker.db.member_views import save_member_view, workout_payload
 from tracker.ui.embeds import build_setup_panel_embed, build_start_workout_embed
 
 log = logging.getLogger(__name__)
@@ -24,6 +26,9 @@ SETUP_PANEL_VIEW = "setup_panel"
 START_WORKOUT_VIEW = "start_workout"
 CREATE_FORUM_BUTTON = "workout:create-forum"
 START_WORKOUT_BUTTON = "workout:start"
+WORKOUT_SESSION_VIEW = "workout_session"
+WORKOUT_SESSION_BUTTON = "workout:session"
+THREAD_AUTO_ARCHIVE_MINUTES = 10080
 
 ViewBuilder = Callable[[str], discord.ui.View]
 _BUILDERS: dict[str, ViewBuilder] = {}
@@ -216,7 +221,10 @@ class StartWorkoutView(PersistentView):
         """Create a workout post in this member's private forum.
 
         The post has no image yet. The tile is attached when the workout ends,
-        so it can show the type of workout that was done.
+        so it can show the type of workout that was done. The starter message
+        carries a button that is stored for restore after a restart. Discord's
+        own archive timer is set to seven days so this process can close the
+        post at 24 hours.
 
         Args:
             interaction: Button press on the start-workout panel.
@@ -245,10 +253,13 @@ class StartWorkoutView(PersistentView):
             )
             return
 
+        started_at = datetime.now(timezone.utc)
         try:
             created = await forum.create_thread(
                 name=workout_post_name(),
                 content=f"Workout started for {member.mention}.",
+                view=WorkoutSessionView(),
+                auto_archive_duration=THREAD_AUTO_ARCHIVE_MINUTES,
                 reason=f"Workout post for {member.id}",
             )
         except discord.Forbidden:
@@ -260,10 +271,64 @@ class StartWorkoutView(PersistentView):
             return
 
         log.info("Created workout post %s for user %s", created.thread.id, member.id)
+        try:
+            save_member_view(
+                database,
+                created.message.id,
+                created.thread.id,
+                guild.id,
+                member.id,
+                WORKOUT_SESSION_VIEW,
+                workout_payload(started_at),
+            )
+        except sqlite3.Error:
+            log.exception("Could not store workout view %s", created.message.id)
+            await interaction.followup.send(
+                f"Your workout post is ready: {created.thread.mention}. "
+                "The bot could not save it, so it will not survive a restart.",
+                ephemeral=True,
+            )
+            return
         await interaction.followup.send(
             f"Your workout post is ready: {created.thread.mention}",
             ephemeral=True,
         )
+
+
+@register_view(WORKOUT_SESSION_VIEW)
+def build_workout_session(state: str) -> discord.ui.View:
+    """Rebuild the button on an open workout post after a restart.
+
+    Args:
+        state: JSON saved with the view. The button does not read it yet.
+
+    Returns:
+        The persistent workout button.
+    """
+    del state
+    return WorkoutSessionView()
+
+
+class WorkoutSessionView(PersistentView):
+    """Button on an open workout post. It only acknowledges the click."""
+
+    @discord.ui.button(
+        label="OK",
+        style=discord.ButtonStyle.secondary,
+        custom_id=WORKOUT_SESSION_BUTTON,
+    )
+    async def acknowledge(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        """Reply to a click without ending the workout.
+
+        Args:
+            interaction: Button press on the workout post.
+            button: The button that was pressed.
+
+        Returns:
+            None.
+        """
+        del button
+        await interaction.response.send_message("ok", ephemeral=True)
 
 
 async def send_start_workout_panel(channel: discord.TextChannel) -> discord.Message:
