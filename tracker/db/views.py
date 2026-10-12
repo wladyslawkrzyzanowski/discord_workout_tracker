@@ -78,6 +78,29 @@ def delete_view(database: Database, message_id: int) -> None:
     database.connection.commit()
 
 
+def channel_has_view(database: Database, channel_id: int, view_name: str) -> bool:
+    """Report whether a channel already has a stored view of this kind.
+
+    Args:
+        database: Open database.
+        channel_id: Channel to search.
+        view_name: Registry name of the view class.
+
+    Returns:
+        True when at least one stored view matches.
+    """
+    row = database.connection.execute(
+        """
+        SELECT 1
+        FROM persistent_views
+        WHERE channel_id = ? AND view_name = ?
+        LIMIT 1
+        """,
+        (channel_id, view_name),
+    ).fetchone()
+    return row is not None
+
+
 def list_views(database: Database) -> list[StoredView]:
     """List every stored view across all guilds.
 

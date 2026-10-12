@@ -65,7 +65,23 @@ class Database:
             CREATE TABLE IF NOT EXISTS guild_setups (
                 guild_id INTEGER PRIMARY KEY,
                 category_id INTEGER NOT NULL,
-                channel_id INTEGER NOT NULL
+                channel_id INTEGER NOT NULL,
+                moderator_role_id INTEGER,
+                tracking_role_id INTEGER,
+                start_channel_id INTEGER
+            )
+            """
+        )
+        _add_column_if_missing(connection, "guild_setups", "moderator_role_id", "INTEGER")
+        _add_column_if_missing(connection, "guild_setups", "tracking_role_id", "INTEGER")
+        _add_column_if_missing(connection, "guild_setups", "start_channel_id", "INTEGER")
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS member_forums (
+                guild_id INTEGER NOT NULL,
+                user_id INTEGER NOT NULL,
+                channel_id INTEGER NOT NULL,
+                PRIMARY KEY (guild_id, user_id)
             )
             """
         )
@@ -81,3 +97,26 @@ class Database:
         if self._connection is not None:
             self._connection.close()
             self._connection = None
+
+
+def _add_column_if_missing(
+    connection: sqlite3.Connection,
+    table: str,
+    column: str,
+    definition: str,
+) -> None:
+    """Add a column when an older database file does not have it yet.
+
+    Args:
+        connection: Open SQLite connection.
+        table: Table to alter. This is a fixed name from this module, not user input.
+        column: Column to add when it is absent.
+        definition: SQL type clause for the new column.
+
+    Returns:
+        None.
+    """
+    rows = connection.execute(f"PRAGMA table_info({table})")
+    names = {row["name"] for row in rows}
+    if column not in names:
+        connection.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
