@@ -266,6 +266,140 @@ def create_category(database: Database, guild_id: int, user_id: int, name: str) 
     )
 
 
+def list_exercises_outside(
+    database: Database,
+    guild_id: int,
+    user_id: int,
+    category_id: str,
+) -> list[CatalogExercise]:
+    """List this member's exercises that are not in one category.
+
+    Args:
+        database: Open database.
+        guild_id: Discord guild that owns the catalog.
+        user_id: Member whose exercises are listed.
+        category_id: Category to exclude.
+
+    Returns:
+        Exercises ordered by name. Choosing one copies it into the category
+        without creating a new id.
+    """
+    rows = database.connection.execute(
+        """
+        SELECT exercise_id, name, image_url, is_default
+        FROM exercises
+        WHERE guild_id = ? AND user_id = ?
+          AND exercise_id NOT IN (
+              SELECT exercise_id
+              FROM exercise_placements
+              WHERE guild_id = ? AND user_id = ? AND category_id = ?
+          )
+        ORDER BY name
+        """,
+        (guild_id, user_id, guild_id, user_id, category_id),
+    )
+    return [_exercise_from_row(row) for row in rows]
+
+
+def create_exercise(
+    database: Database,
+    guild_id: int,
+    user_id: int,
+    category_id: str,
+    name: str,
+    image_url: str | None,
+) -> CatalogExercise:
+    """Create an exercise and place it in a custom category.
+
+    Args:
+        database: Open database.
+        guild_id: Discord guild that owns the catalog.
+        user_id: Member who is adding the exercise.
+        category_id: Custom category that receives the exercise.
+        name: Requested name. Leading and trailing space is removed.
+        image_url: Optional http or https address, or None.
+
+    Returns:
+        The stored exercise. Its id looks like ``123-1``.
+
+    Raises:
+        CatalogRejected: The category cannot take exercises, the name is
+        empty or already used, or the image address is not http(s).
+    """
+    _require_custom_category(database, guild_id, user_id, category_id)
+    cleaned = _clean_name(name)
+    _reject_duplicate_exercise(database, guild_id, user_id, cleaned)
+    stored_image = _clean_image_url(image_url)
+    exercise_id = f"{user_id}-{_next_exercise_number(database, guild_id, user_id)}"
+    position = _next_placement_position(database, guild_id, user_id, category_id)
+    database.connection.execute(
+        """
+        INSERT INTO exercises (
+            guild_id, user_id, exercise_id, name, image_url, is_default
+        ) VALUES (?, ?, ?, ?, ?, 0)
+        """,
+        (guild_id, user_id, exercise_id, cleaned, stored_image),
+    )
+    database.connection.execute(
+        """
+        INSERT INTO exercise_placements (
+            guild_id, user_id, category_id, exercise_id, position
+        ) VALUES (?, ?, ?, ?, ?)
+        """,
+        (guild_id, user_id, category_id, exercise_id, position),
+    )
+    database.connection.commit()
+    return CatalogExercise(
+        exercise_id=exercise_id,
+        name=cleaned,
+        image_url=stored_image,
+        is_default=False,
+    )
+
+
+def place_exercises(
+    database: Database,
+    guild_id: int,
+    user_id: int,
+    category_id: str,
+    exercise_ids: list[str],
+) -> list[str]:
+    """Copy existing exercises into a custom category, keeping their ids.
+
+    Args:
+        database: Open database.
+        guild_id: Discord guild that owns the catalog.
+        user_id: Member who owns the exercises.
+        category_id: Custom category that receives the placements.
+        exercise_ids: Exercises to copy. Unknown ids and exercises already
+            in the category are skipped.
+
+    Returns:
+        Names of the exercises that were added, in the request order.
+
+    Raises:
+        CatalogRejected: The category is missing or it is a default category.
+    """
+    _require_custom_category(database, guild_id, user_id, category_id)
+    added: list[str] = []
+    for exercise_id in exercise_ids:
+        exercise = _get_exercise(database, guild_id, user_id, exercise_id)
+        if exercise is None or _placement_exists(database, guild_id, user_id, category_id, exercise_id):
+            continue
+        position = _next_placement_position(database, guild_id, user_id, category_id)
+        database.connection.execute(
+            """
+            INSERT INTO exercise_placements (
+                guild_id, user_id, category_id, exercise_id, position
+            ) VALUES (?, ?, ?, ?, ?)
+            """,
+            (guild_id, user_id, category_id, exercise_id, position),
+        )
+        added.append(exercise.name)
+    database.connection.commit()
+    return added
+
+
 def delete_category(database: Database, guild_id: int, user_id: int, category_id: str) -> None:
     """Delete a custom category and placements that exist only there.
 
@@ -419,6 +553,210 @@ def _next_position(database: Database, guild_id: int, user_id: int) -> int:
         (guild_id, user_id),
     ).fetchone()
     return int(row["next_position"])
+
+
+def _require_custom_category(
+    database: Database,
+    guild_id: int,
+    user_id: int,
+    category_id: str,
+) -> ExerciseCategory:
+    """Load a category and reject a missing or default one.
+
+    Args:
+        database: Open database.
+        guild_id: Discord guild that owns the catalog.
+        user_id: Member who owns the category.
+        category_id: Category that must accept edits.
+
+    Returns:
+        The custom category.
+
+    Raises:
+        CatalogRejected: The category is missing or it is a default category.
+    """
+    category = get_category(database, guild_id, user_id, category_id)
+    if category is None:
+        raise CatalogRejected("missing")
+    if category.is_default:
+        raise CatalogRejected("default-locked")
+    return category
+
+
+def _get_exercise(
+    database: Database,
+    guild_id: int,
+    user_id: int,
+    exercise_id: str,
+) -> CatalogExercise | None:
+    """Load one exercise.
+
+    Args:
+        database: Open database.
+        guild_id: Discord guild that owns the catalog.
+        user_id: Member who owns the exercise.
+        exercise_id: Exercise to load.
+
+    Returns:
+        The exercise, or None when this member does not have it.
+    """
+    row = database.connection.execute(
+        """
+        SELECT exercise_id, name, image_url, is_default
+        FROM exercises
+        WHERE guild_id = ? AND user_id = ? AND exercise_id = ?
+        """,
+        (guild_id, user_id, exercise_id),
+    ).fetchone()
+    if row is None:
+        return None
+    return _exercise_from_row(row)
+
+
+def _placement_exists(
+    database: Database,
+    guild_id: int,
+    user_id: int,
+    category_id: str,
+    exercise_id: str,
+) -> bool:
+    """Report whether an exercise is already in a category.
+
+    Args:
+        database: Open database.
+        guild_id: Discord guild that owns the catalog.
+        user_id: Member who owns the placement.
+        category_id: Category to check.
+        exercise_id: Exercise to check.
+
+    Returns:
+        True when that placement exists.
+    """
+    row = database.connection.execute(
+        """
+        SELECT 1
+        FROM exercise_placements
+        WHERE guild_id = ? AND user_id = ? AND category_id = ? AND exercise_id = ?
+        LIMIT 1
+        """,
+        (guild_id, user_id, category_id, exercise_id),
+    ).fetchone()
+    return row is not None
+
+
+def _reject_duplicate_exercise(
+    database: Database,
+    guild_id: int,
+    user_id: int,
+    name: str,
+) -> None:
+    """Reject an exercise name this member already has.
+
+    Args:
+        database: Open database.
+        guild_id: Discord guild that owns the catalog.
+        user_id: Member whose names are checked.
+        name: Cleaned name.
+
+    Returns:
+        None.
+
+    Raises:
+        CatalogRejected: An exercise with this name already exists, ignoring case.
+    """
+    rows = database.connection.execute(
+        """
+        SELECT name
+        FROM exercises
+        WHERE guild_id = ? AND user_id = ?
+        """,
+        (guild_id, user_id),
+    )
+    folded = name.casefold()
+    if any(row["name"].casefold() == folded for row in rows):
+        raise CatalogRejected("duplicate-name")
+
+
+def _clean_image_url(image_url: str | None) -> str | None:
+    """Normalize an optional exercise image address.
+
+    Args:
+        image_url: Raw address from a modal, or None.
+
+    Returns:
+        The stripped address, or None when it was empty.
+
+    Raises:
+        CatalogRejected: The address is not an http or https URL.
+    """
+    if image_url is None:
+        return None
+    cleaned = image_url.strip()
+    if not cleaned:
+        return None
+    lowered = cleaned.lower()
+    if " " in cleaned or len(cleaned) > 500 or not (lowered.startswith("https://") or lowered.startswith("http://")):
+        raise CatalogRejected("bad-image")
+    return cleaned
+
+
+def _next_placement_position(
+    database: Database,
+    guild_id: int,
+    user_id: int,
+    category_id: str,
+) -> int:
+    """Return the next placement sort position in a category.
+
+    Args:
+        database: Open database.
+        guild_id: Discord guild that owns the catalog.
+        user_id: Member who owns the category.
+        category_id: Category that receives a placement.
+
+    Returns:
+        One past the current highest position, or 0 when the category is empty.
+    """
+    row = database.connection.execute(
+        """
+        SELECT COALESCE(MAX(position), -1) + 1 AS next_position
+        FROM exercise_placements
+        WHERE guild_id = ? AND user_id = ? AND category_id = ?
+        """,
+        (guild_id, user_id, category_id),
+    ).fetchone()
+    return int(row["next_position"])
+
+
+def _next_exercise_number(database: Database, guild_id: int, user_id: int) -> int:
+    """Return the next custom exercise number for this member.
+
+    Args:
+        database: Open database.
+        guild_id: Discord guild that owns the catalog.
+        user_id: Member whose exercise ids are scanned.
+
+    Returns:
+        The next integer used in ids such as ``123-4``.
+    """
+    prefix = f"{user_id}-"
+    rows = database.connection.execute(
+        """
+        SELECT exercise_id
+        FROM exercises
+        WHERE guild_id = ? AND user_id = ?
+        """,
+        (guild_id, user_id),
+    )
+    highest = 0
+    for row in rows:
+        exercise_id = row["exercise_id"]
+        if not exercise_id.startswith(prefix):
+            continue
+        tail = exercise_id[len(prefix) :]
+        if tail.isdigit():
+            highest = max(highest, int(tail))
+    return highest + 1
 
 
 def _next_category_number(database: Database, guild_id: int, user_id: int) -> int:

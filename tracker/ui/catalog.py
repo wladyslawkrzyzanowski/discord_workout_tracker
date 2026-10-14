@@ -9,14 +9,18 @@ import logging
 import discord
 
 from tracker.db.catalog import (
+    CatalogExercise,
     CatalogRejected,
     ExerciseCategory,
     create_category,
+    create_exercise,
     delete_category,
     ensure_user_catalog,
     get_category,
     list_categories,
     list_exercises,
+    list_exercises_outside,
+    place_exercises,
 )
 from tracker.db.database import Database
 
@@ -100,6 +104,22 @@ class CatalogView(discord.ui.View):
                     row=1,
                 )
             )
+            self.add_item(
+                CatalogActionButton(
+                    label="New",
+                    style=discord.ButtonStyle.primary,
+                    action="new-exercise",
+                    row=2,
+                )
+            )
+            self.add_item(
+                CatalogActionButton(
+                    label="Existing",
+                    style=discord.ButtonStyle.secondary,
+                    action="existing-exercise",
+                    row=2,
+                )
+            )
         if len(pages) > 1:
             self.add_item(
                 CatalogActionButton(
@@ -166,7 +186,10 @@ class CatalogView(discord.ui.View):
                     f"Exercises: {listing}"
                 )
             else:
-                lines.append(f"**{title}**\nExercises: {listing}")
+                lines.append(
+                    f"**{title}**\nExercises: {listing}\n"
+                    "New creates an exercise. Existing copies one you already have and keeps its id."
+                )
         text = "\n\n".join(lines)
         if len(text) > 1900:
             return text[:1900] + "…"
@@ -260,7 +283,8 @@ class CatalogActionButton(discord.ui.Button):
         Args:
             label: Text on the button.
             style: Discord button colour.
-            action: ``add-category``, ``delete-category``, ``previous-page``, or ``next-page``.
+            action: ``add-category``, ``delete-category``, ``new-exercise``,
+            ``existing-exercise``, ``previous-page``, or ``next-page``.
             row: Action row on the message.
             disabled: True when the button should not be clickable.
 
@@ -284,6 +308,13 @@ class CatalogActionButton(discord.ui.Button):
             return
         if self.action == "add-category":
             await interaction.response.send_modal(CategoryNameModal(view))
+            return
+        if self.action == "new-exercise":
+            await interaction.response.send_modal(ExerciseModal(view))
+            return
+        if self.action == "existing-exercise":
+            picker = ExistingExerciseView(view)
+            await interaction.response.edit_message(content=picker.render(), view=picker)
             return
         if self.action == "previous-page":
             view.page -= 1
@@ -422,6 +453,280 @@ class DeleteCategoryView(discord.ui.View):
         await interaction.response.edit_message(content=self.catalog.render(), view=self.catalog)
 
 
+class ExerciseModal(discord.ui.Modal):
+    """Asks for a new exercise name and an optional image address."""
+
+    name = discord.ui.TextInput(
+        label="Exercise name",
+        max_length=100,
+        required=True,
+    )
+    image = discord.ui.TextInput(
+        label="Image URL",
+        max_length=500,
+        required=False,
+        placeholder="https://example.com/bench.png",
+    )
+
+    def __init__(self, catalog: CatalogView) -> None:
+        """Remember the category that receives the exercise.
+
+        Args:
+            catalog: Open category menu. A custom category must be selected.
+
+        Returns:
+            None.
+        """
+        super().__init__(title="New exercise")
+        self.catalog = catalog
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        """Store the exercise in the selected category.
+
+        Args:
+            interaction: Modal submission.
+
+        Returns:
+            None.
+        """
+        category = self.catalog.selected()
+        if category is None:
+            await interaction.response.send_message("Choose a category first.", ephemeral=True)
+            return
+        try:
+            exercise = create_exercise(
+                self.catalog.database,
+                self.catalog.guild_id,
+                self.catalog.user_id,
+                category.category_id,
+                self.name.value,
+                self.image.value,
+            )
+        except CatalogRejected as rejected:
+            await interaction.response.send_message(_exercise_rejection_text(rejected), ephemeral=True)
+            return
+        log.info(
+            "Created exercise %s for user %s in guild %s",
+            exercise.exercise_id,
+            self.catalog.user_id,
+            self.catalog.guild_id,
+        )
+        self.catalog.rebuild()
+        await interaction.response.edit_message(
+            content=self.catalog.render(
+                f"Added **{discord.utils.escape_markdown(exercise.name)}** as `{exercise.exercise_id}`."
+            ),
+            view=self.catalog,
+        )
+
+
+class ExistingExerciseView(discord.ui.View):
+    """Paginated menu of exercises that can be copied into a category."""
+
+    def __init__(self, catalog: CatalogView) -> None:
+        """Build the first page of exercises outside the selected category.
+
+        Args:
+            catalog: Category menu to return to.
+
+        Returns:
+            None.
+        """
+        super().__init__(timeout=CATALOG_TIMEOUT_SECONDS)
+        self.catalog = catalog
+        self.page = 0
+        self.rebuild()
+
+    def rebuild(self) -> None:
+        """Replace the components for the current page.
+
+        Returns:
+            None.
+        """
+        self.clear_items()
+        category = self.catalog.selected()
+        exercises: list[CatalogExercise] = []
+        if category is not None:
+            exercises = list_exercises_outside(
+                self.catalog.database,
+                self.catalog.guild_id,
+                self.catalog.user_id,
+                category.category_id,
+            )
+        pages = _exercise_pages(exercises)
+        self.page = min(self.page, max(len(pages) - 1, 0))
+        visible = pages[self.page] if pages else []
+        if visible:
+            self.add_item(ExistingExerciseSelect(visible))
+        self.add_item(ExistingActionButton(label="Back", action="back", row=1))
+        if len(pages) > 1:
+            self.add_item(
+                ExistingActionButton(
+                    label="Previous",
+                    action="previous-page",
+                    row=2,
+                    disabled=self.page == 0,
+                )
+            )
+            self.add_item(
+                ExistingActionButton(
+                    label="Next",
+                    action="next-page",
+                    row=2,
+                    disabled=self.page >= len(pages) - 1,
+                )
+            )
+
+    def render(self, notice: str | None = None) -> str:
+        """Build the message text for the exercise picker.
+
+        Args:
+            notice: Optional sentence placed above the menu.
+
+        Returns:
+            The ephemeral message content.
+        """
+        category = self.catalog.selected()
+        name = "this category" if category is None else discord.utils.escape_markdown(category.name)
+        lines: list[str] = []
+        if notice:
+            lines.append(notice)
+        outside = []
+        if category is not None:
+            outside = list_exercises_outside(
+                self.catalog.database,
+                self.catalog.guild_id,
+                self.catalog.user_id,
+                category.category_id,
+            )
+        if not outside:
+            lines.append(f"Every exercise is already in **{name}**.")
+        else:
+            lines.append(
+                f"Select exercises to copy into **{name}**. "
+                "They keep the same id, so logged weight and reps stay shared."
+            )
+        return "\n\n".join(lines)
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        """Ignore a click from anyone other than the catalog owner.
+
+        Args:
+            interaction: Component click on this ephemeral message.
+
+        Returns:
+            True when the click belongs to the catalog owner.
+        """
+        return await self.catalog.interaction_check(interaction)
+
+
+class ExistingExerciseSelect(discord.ui.Select):
+    """Multi-select of exercises that can be copied into the category."""
+
+    def __init__(self, exercises: list[CatalogExercise]) -> None:
+        """Fill one page of exercises.
+
+        Args:
+            exercises: Exercises shown on this page.
+
+        Returns:
+            None.
+        """
+        options = [
+            discord.SelectOption(
+                label=exercise.name,
+                value=exercise.exercise_id,
+                description="Default" if exercise.is_default else "Custom",
+            )
+            for exercise in exercises
+        ]
+        super().__init__(
+            placeholder="Choose exercises",
+            min_values=1,
+            max_values=len(options),
+            options=options,
+            row=0,
+        )
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        """Copy the chosen exercises into the open category.
+
+        Args:
+            interaction: Select change on the picker.
+
+        Returns:
+            None.
+        """
+        view = self.view
+        if not isinstance(view, ExistingExerciseView):
+            return
+        category = view.catalog.selected()
+        if category is None:
+            await interaction.response.send_message("Choose a category first.", ephemeral=True)
+            return
+        try:
+            added = place_exercises(
+                view.catalog.database,
+                view.catalog.guild_id,
+                view.catalog.user_id,
+                category.category_id,
+                list(self.values),
+            )
+        except CatalogRejected as rejected:
+            await interaction.response.send_message(_exercise_rejection_text(rejected), ephemeral=True)
+            return
+        notice = _added_notice(added)
+        view.rebuild()
+        await interaction.response.edit_message(content=view.render(notice), view=view)
+
+
+class ExistingActionButton(discord.ui.Button):
+    """Back or page button on the existing-exercise picker."""
+
+    def __init__(self, *, label: str, action: str, row: int, disabled: bool = False) -> None:
+        """Create a picker button.
+
+        Args:
+            label: Text on the button.
+            action: ``back``, ``previous-page``, or ``next-page``.
+            row: Action row on the message.
+            disabled: True when the button should not be clickable.
+
+        Returns:
+            None.
+        """
+        super().__init__(
+            label=label,
+            style=discord.ButtonStyle.secondary,
+            row=row,
+            disabled=disabled,
+        )
+        self.action = action
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        """Turn the page or return to the category menu.
+
+        Args:
+            interaction: Button press on the picker.
+
+        Returns:
+            None.
+        """
+        view = self.view
+        if not isinstance(view, ExistingExerciseView):
+            return
+        if self.action == "back":
+            view.catalog.rebuild()
+            await interaction.response.edit_message(content=view.catalog.render(), view=view.catalog)
+            return
+        if self.action == "previous-page":
+            view.page -= 1
+        elif self.action == "next-page":
+            view.page += 1
+        view.rebuild()
+        await interaction.response.edit_message(content=view.render(), view=view)
+
+
 async def send_catalog(interaction: discord.Interaction) -> None:
     """Open the category menu for the member who clicked the gear.
 
@@ -503,6 +808,55 @@ async def _finish_delete(
         content=catalog.render(f"Deleted **{discord.utils.escape_markdown(name)}**."),
         view=catalog,
     )
+
+
+def _exercise_pages(exercises: list[CatalogExercise]) -> list[list[CatalogExercise]]:
+    """Split exercises into menus of at most 25 options.
+
+    Args:
+        exercises: Full exercise list.
+
+    Returns:
+        Pages. Empty when there is nothing to copy.
+    """
+    return [exercises[index : index + PAGE_SIZE] for index in range(0, len(exercises), PAGE_SIZE)]
+
+
+def _added_notice(names: list[str]) -> str:
+    """Describe exercises that were copied into a category.
+
+    Args:
+        names: Exercise names that were added.
+
+    Returns:
+        A sentence for the ephemeral message.
+    """
+    if not names:
+        return "Those exercises are already in this category."
+    escaped = [discord.utils.escape_markdown(name) for name in names]
+    if len(escaped) == 1:
+        return f"Added **{escaped[0]}**."
+    return f"Added {', '.join(f'**{name}**' for name in escaped)}."
+
+
+def _exercise_rejection_text(rejected: CatalogRejected) -> str:
+    """Turn an exercise-catalog rejection into a sentence.
+
+    Args:
+        rejected: Error raised by the catalog storage.
+
+    Returns:
+        Text safe to show to the member.
+    """
+    if rejected.reason == "duplicate-name":
+        return "You already have an exercise with that name."
+    if rejected.reason == "bad-image":
+        return "Enter an http or https image address, or leave it empty."
+    if rejected.reason == "default-locked":
+        return "Default categories cannot be edited."
+    if rejected.reason == "missing":
+        return "That category no longer exists."
+    return "Enter an exercise name."
 
 
 def _pages(categories: list[ExerciseCategory]) -> list[list[ExerciseCategory]]:
