@@ -400,6 +400,116 @@ def place_exercises(
     return added
 
 
+def remove_exercises(
+    database: Database,
+    guild_id: int,
+    user_id: int,
+    category_id: str,
+    exercise_ids: list[str],
+) -> list[str]:
+    """Remove exercises from a custom category.
+
+    A custom exercise with no category left is removed from the menu. A
+    default exercise stays available in its default category. Logged sets
+    are not deleted.
+
+    Args:
+        database: Open database.
+        guild_id: Discord guild that owns the catalog.
+        user_id: Member who owns the category.
+        category_id: Custom category losing the placements.
+        exercise_ids: Exercises to remove. Unknown ids are skipped.
+
+    Returns:
+        Names of the exercises that were removed, in the request order.
+
+    Raises:
+        CatalogRejected: The category is missing or it is a default category.
+    """
+    _require_custom_category(database, guild_id, user_id, category_id)
+    removed: list[str] = []
+    for exercise_id in exercise_ids:
+        exercise = _get_exercise(database, guild_id, user_id, exercise_id)
+        if exercise is None or not _placement_exists(
+            database, guild_id, user_id, category_id, exercise_id
+        ):
+            continue
+        database.connection.execute(
+            """
+            DELETE FROM exercise_placements
+            WHERE guild_id = ? AND user_id = ? AND category_id = ? AND exercise_id = ?
+            """,
+            (guild_id, user_id, category_id, exercise_id),
+        )
+        if not exercise.is_default and not _exercise_has_placement(database, guild_id, user_id, exercise_id):
+            database.connection.execute(
+                """
+                DELETE FROM exercises
+                WHERE guild_id = ? AND user_id = ? AND exercise_id = ?
+                """,
+                (guild_id, user_id, exercise_id),
+            )
+        removed.append(exercise.name)
+    database.connection.commit()
+    return removed
+
+
+def move_exercise(
+    database: Database,
+    guild_id: int,
+    user_id: int,
+    exercise_id: str,
+    source_category_id: str,
+    destination_category_id: str,
+) -> CatalogExercise:
+    """Move one placement between two custom categories.
+
+    The exercise id does not change.
+
+    Args:
+        database: Open database.
+        guild_id: Discord guild that owns the catalog.
+        user_id: Member who owns both categories.
+        exercise_id: Exercise to move.
+        source_category_id: Custom category that currently holds it.
+        destination_category_id: Custom category that should hold it.
+
+    Returns:
+        The moved exercise.
+
+    Raises:
+        CatalogRejected: A category is missing or default, the exercise is
+        not in the source, or the destination already has it.
+    """
+    _require_custom_category(database, guild_id, user_id, source_category_id)
+    _require_custom_category(database, guild_id, user_id, destination_category_id)
+    exercise = _get_exercise(database, guild_id, user_id, exercise_id)
+    if exercise is None or not _placement_exists(
+        database, guild_id, user_id, source_category_id, exercise_id
+    ):
+        raise CatalogRejected("missing")
+    if _placement_exists(database, guild_id, user_id, destination_category_id, exercise_id):
+        raise CatalogRejected("already-placed")
+    database.connection.execute(
+        """
+        DELETE FROM exercise_placements
+        WHERE guild_id = ? AND user_id = ? AND category_id = ? AND exercise_id = ?
+        """,
+        (guild_id, user_id, source_category_id, exercise_id),
+    )
+    position = _next_placement_position(database, guild_id, user_id, destination_category_id)
+    database.connection.execute(
+        """
+        INSERT INTO exercise_placements (
+            guild_id, user_id, category_id, exercise_id, position
+        ) VALUES (?, ?, ?, ?, ?)
+        """,
+        (guild_id, user_id, destination_category_id, exercise_id, position),
+    )
+    database.connection.commit()
+    return exercise
+
+
 def delete_category(database: Database, guild_id: int, user_id: int, category_id: str) -> None:
     """Delete a custom category and placements that exist only there.
 
@@ -611,6 +721,35 @@ def _get_exercise(
     if row is None:
         return None
     return _exercise_from_row(row)
+
+
+def _exercise_has_placement(
+    database: Database,
+    guild_id: int,
+    user_id: int,
+    exercise_id: str,
+) -> bool:
+    """Report whether an exercise is still placed in any category.
+
+    Args:
+        database: Open database.
+        guild_id: Discord guild that owns the catalog.
+        user_id: Member who owns the exercise.
+        exercise_id: Exercise to check.
+
+    Returns:
+        True when at least one placement remains.
+    """
+    row = database.connection.execute(
+        """
+        SELECT 1
+        FROM exercise_placements
+        WHERE guild_id = ? AND user_id = ? AND exercise_id = ?
+        LIMIT 1
+        """,
+        (guild_id, user_id, exercise_id),
+    ).fetchone()
+    return row is not None
 
 
 def _placement_exists(
