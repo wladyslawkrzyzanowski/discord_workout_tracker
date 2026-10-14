@@ -125,6 +125,21 @@ class Database:
         )
         connection.execute(
             """
+            CREATE TABLE IF NOT EXISTS exercise_sets (
+                set_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                guild_id INTEGER NOT NULL,
+                user_id INTEGER NOT NULL,
+                exercise_id TEXT NOT NULL,
+                thread_id INTEGER NOT NULL,
+                set_number INTEGER NOT NULL,
+                weight TEXT NOT NULL,
+                reps INTEGER NOT NULL,
+                created_at TEXT NOT NULL
+            )
+            """
+        )
+        connection.execute(
+            """
             CREATE TABLE IF NOT EXISTS exercise_placements (
                 guild_id INTEGER NOT NULL,
                 user_id INTEGER NOT NULL,

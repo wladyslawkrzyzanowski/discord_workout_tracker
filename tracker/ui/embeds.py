@@ -47,6 +47,28 @@ def build_setup_panel_embed() -> discord.Embed:
     )
 
 
+def build_workout_log_embed(groups: list[tuple[str, list[str]]]) -> discord.Embed:
+    """Build the list of sets posted under a workout menu.
+
+    Args:
+        groups: Exercise names paired with lines such as ``1. 60 kg × 8``.
+
+    Returns:
+        The embed. An empty list becomes a short empty state.
+    """
+    if not groups:
+        description = "No sets yet."
+    else:
+        blocks = [
+            f"**{discord.utils.escape_markdown(name)}**\n" + "\n".join(lines)
+            for name, lines in groups
+        ]
+        description = "\n\n".join(blocks)
+        if len(description) > 4000:
+            description = description[:3990] + "\n…"
+    return build_embed("Sets", description)
+
+
 def build_start_workout_embed() -> discord.Embed:
     """Build the panel posted in the start-workout channel.
 

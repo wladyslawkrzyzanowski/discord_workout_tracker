@@ -35,19 +35,6 @@ class MemberView:
     payload: str
 
 
-def workout_payload(started_at: datetime) -> str:
-    """Build the JSON stored with a newly opened workout.
-
-    Args:
-        started_at: Time the workout post was created. Converted to UTC.
-
-    Returns:
-        A JSON object containing ``started_at``.
-    """
-    moment = started_at.astimezone(timezone.utc)
-    return json.dumps({"started_at": moment.isoformat()})
-
-
 def payload_started_at(payload: str) -> datetime | None:
     """Read the workout start time from a view payload.
 
@@ -135,6 +122,34 @@ def save_member_view(
             payload = excluded.payload
         """,
         (message_id, channel_id, guild_id, user_id, view_name, payload),
+    )
+    database.connection.commit()
+
+
+def replace_member_view_payload(database: Database, message_id: int, payload: str) -> None:
+    """Replace the JSON stored for one member view.
+
+    Args:
+        database: Open database.
+        message_id: Discord message whose payload changes.
+        payload: JSON object with the extra data this view needs.
+
+    Returns:
+        None.
+
+    Raises:
+        ValueError: ``payload`` is not a JSON object.
+    """
+    parsed = json.loads(payload)
+    if not isinstance(parsed, dict):
+        raise ValueError("payload must be a JSON object")
+    database.connection.execute(
+        """
+        UPDATE member_views
+        SET payload = ?
+        WHERE message_id = ?
+        """,
+        (payload, message_id),
     )
     database.connection.commit()
 

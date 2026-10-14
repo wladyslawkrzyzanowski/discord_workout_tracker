@@ -17,9 +17,15 @@ import discord
 from tracker.db.database import Database
 from tracker.db.forums import get_member_forum, save_member_forum
 from tracker.db.guilds import GuildSetup, get_guild_setup
-from tracker.db.member_views import save_member_view, workout_payload
+from tracker.db.catalog import ensure_user_catalog, list_categories
+from tracker.db.member_views import save_member_view
 from tracker.ui.catalog import send_catalog
-from tracker.ui.embeds import build_setup_panel_embed, build_start_workout_embed
+from tracker.ui.embeds import (
+    build_setup_panel_embed,
+    build_start_workout_embed,
+    build_workout_log_embed,
+)
+from tracker.ui.session import ExerciseMenuView, menu_from_payload
 
 log = logging.getLogger(__name__)
 
@@ -244,7 +250,7 @@ class StartWorkoutView(PersistentView):
 
         The post has no image yet. The tile is attached when the workout ends,
         so it can show the type of workout that was done. The starter message
-        carries a button that is stored for restore after a restart. Discord's
+        carries the exercise menu. A second message lists the sets. Discord's
         own archive timer is set to seven days so this process can close the
         post at 24 hours.
 
@@ -275,12 +281,24 @@ class StartWorkoutView(PersistentView):
             )
             return
 
-        started_at = datetime.now(timezone.utc)
+        ensure_user_catalog(database, guild.id, member.id)
+        categories = list_categories(database, guild.id, member.id)
+        started_at = datetime.now(timezone.utc).isoformat()
+        menu = ExerciseMenuView(
+            database,
+            guild.id,
+            member.id,
+            categories[0].category_id,
+            0,
+            0,
+            None,
+            started_at,
+        )
         try:
             created = await forum.create_thread(
                 name=workout_post_name(),
                 content=f"Workout started for {member.mention}.",
-                view=WorkoutSessionView(),
+                view=menu,
                 auto_archive_duration=THREAD_AUTO_ARCHIVE_MINUTES,
                 reason=f"Workout post for {member.id}",
             )
@@ -294,6 +312,12 @@ class StartWorkoutView(PersistentView):
 
         log.info("Created workout post %s for user %s", created.thread.id, member.id)
         try:
+            log_message = await created.thread.send(embed=build_workout_log_embed([]))
+        except discord.HTTPException:
+            log.warning("Could not post the set list in thread %s", created.thread.id)
+        else:
+            menu.log_message_id = log_message.id
+        try:
             save_member_view(
                 database,
                 created.message.id,
@@ -301,7 +325,7 @@ class StartWorkoutView(PersistentView):
                 guild.id,
                 member.id,
                 WORKOUT_SESSION_VIEW,
-                workout_payload(started_at),
+                menu.payload(),
             )
         except sqlite3.Error:
             log.exception("Could not store workout view %s", created.message.id)
@@ -319,16 +343,19 @@ class StartWorkoutView(PersistentView):
 
 @register_view(WORKOUT_SESSION_VIEW)
 def build_workout_session(state: str) -> discord.ui.View:
-    """Rebuild the button on an open workout post after a restart.
+    """Rebuild the controls on an open workout post after a restart.
 
     Args:
-        state: JSON saved with the view. The button does not read it yet.
+        state: JSON saved with the view. Older posts only contain a start time
+            and still use the acknowledgement button.
 
     Returns:
-        The persistent workout button.
+        The exercise menu, or the acknowledgement button for an older post.
     """
-    del state
-    return WorkoutSessionView()
+    menu = menu_from_payload(state)
+    if menu is None:
+        return WorkoutSessionView()
+    return menu
 
 
 class WorkoutSessionView(PersistentView):

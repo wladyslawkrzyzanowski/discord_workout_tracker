@@ -10,6 +10,7 @@ import tracker.cogs as cogs
 from tracker.db.database import Database
 from tracker.db.member_views import list_member_views
 from tracker.db.views import list_views
+from tracker.ui.session import bind_database
 from tracker.ui.views import build_view
 
 log = logging.getLogger(__name__)
@@ -80,6 +81,7 @@ class WorkoutBot(commands.Bot):
         Returns:
             None.
         """
+        bind_database(self.database)
         for stored in list_views(self.database):
             self._add_stored_view(
                 stored.view_name,
