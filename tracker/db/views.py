@@ -78,6 +78,41 @@ def delete_view(database: Database, message_id: int) -> None:
     database.connection.commit()
 
 
+def find_channel_view(
+    database: Database,
+    channel_id: int,
+    view_name: str,
+) -> StoredView | None:
+    """Load one stored view of this kind in a channel.
+
+    Args:
+        database: Open database.
+        channel_id: Channel to search.
+        view_name: Registry name of the view class.
+
+    Returns:
+        The stored view, or None when the channel has none of this kind.
+    """
+    row = database.connection.execute(
+        """
+        SELECT message_id, channel_id, guild_id, view_name, state
+        FROM persistent_views
+        WHERE channel_id = ? AND view_name = ?
+        LIMIT 1
+        """,
+        (channel_id, view_name),
+    ).fetchone()
+    if row is None:
+        return None
+    return StoredView(
+        message_id=row["message_id"],
+        channel_id=row["channel_id"],
+        guild_id=row["guild_id"],
+        view_name=row["view_name"],
+        state=row["state"],
+    )
+
+
 def channel_has_view(database: Database, channel_id: int, view_name: str) -> bool:
     """Report whether a channel already has a stored view of this kind.
 

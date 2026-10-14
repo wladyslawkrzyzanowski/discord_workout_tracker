@@ -97,6 +97,50 @@ class Database:
             )
             """
         )
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS exercise_categories (
+                guild_id INTEGER NOT NULL,
+                user_id INTEGER NOT NULL,
+                category_id TEXT NOT NULL,
+                name TEXT NOT NULL,
+                is_default INTEGER NOT NULL,
+                position INTEGER NOT NULL,
+                PRIMARY KEY (guild_id, user_id, category_id)
+            )
+            """
+        )
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS exercises (
+                guild_id INTEGER NOT NULL,
+                user_id INTEGER NOT NULL,
+                exercise_id TEXT NOT NULL,
+                name TEXT NOT NULL,
+                image_url TEXT,
+                is_default INTEGER NOT NULL,
+                PRIMARY KEY (guild_id, user_id, exercise_id)
+            )
+            """
+        )
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS exercise_placements (
+                guild_id INTEGER NOT NULL,
+                user_id INTEGER NOT NULL,
+                category_id TEXT NOT NULL,
+                exercise_id TEXT NOT NULL,
+                position INTEGER NOT NULL,
+                PRIMARY KEY (guild_id, user_id, category_id, exercise_id),
+                FOREIGN KEY (guild_id, user_id, category_id)
+                    REFERENCES exercise_categories (guild_id, user_id, category_id)
+                    ON DELETE CASCADE,
+                FOREIGN KEY (guild_id, user_id, exercise_id)
+                    REFERENCES exercises (guild_id, user_id, exercise_id)
+                    ON DELETE CASCADE
+            )
+            """
+        )
         connection.commit()
         self._connection = connection
 

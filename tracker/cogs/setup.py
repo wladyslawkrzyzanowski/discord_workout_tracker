@@ -10,11 +10,12 @@ from tracker.bot import WorkoutBot
 from tracker.db.database import Database
 from tracker.db.forums import list_member_forums
 from tracker.db.guilds import get_guild_setup, save_guild_setup
-from tracker.db.views import channel_has_view, save_view
-from tracker.ui.embeds import build_admin_setup_embed
+from tracker.db.views import channel_has_view, find_channel_view, save_view
+from tracker.ui.embeds import build_admin_setup_embed, build_setup_panel_embed
 from tracker.ui.views import (
     SETUP_PANEL_VIEW,
     START_WORKOUT_VIEW,
+    SetupPanelView,
     bot_forum_permissions,
     read_only_forum_permissions,
     send_setup_panel,
@@ -263,7 +264,10 @@ class SetupCog(commands.Cog):
         channel: discord.TextChannel,
         created_channel: bool,
     ) -> None:
-        """Post the administrator notice and, when missing, the member panel.
+        """Post the administrator notice and keep the member panel current.
+
+        An existing panel is edited so newly added buttons, such as the gear,
+        appear without a second message.
 
         Args:
             guild: Guild that invoked setup.
@@ -278,8 +282,15 @@ class SetupCog(commands.Cog):
         """
         if created_channel:
             await channel.send(embed=build_admin_setup_embed())
-        if channel_has_view(self.bot.database, channel.id, SETUP_PANEL_VIEW):
-            return
+        stored = find_channel_view(self.bot.database, channel.id, SETUP_PANEL_VIEW)
+        if stored is not None:
+            try:
+                message = await channel.fetch_message(stored.message_id)
+            except discord.NotFound:
+                message = None
+            if message is not None:
+                await message.edit(embed=build_setup_panel_embed(), view=SetupPanelView())
+                return
         message = await send_setup_panel(channel)
         save_view(
             self.bot.database,

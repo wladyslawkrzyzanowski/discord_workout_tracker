@@ -42,7 +42,8 @@ def build_setup_panel_embed() -> discord.Embed:
     return build_embed(
         title = "Workout panel",
         description = "This panel is where you create your own place to track workouts.\n\n"
-        "You can do this once. The bot creates a private forum that only you can see.",
+        "You can do this once. The bot creates a private forum that only you can see.\n"
+        "Use the gear to organize your exercise categories.",
     )
 
 

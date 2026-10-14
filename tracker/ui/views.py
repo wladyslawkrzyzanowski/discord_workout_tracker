@@ -18,6 +18,7 @@ from tracker.db.database import Database
 from tracker.db.forums import get_member_forum, save_member_forum
 from tracker.db.guilds import GuildSetup, get_guild_setup
 from tracker.db.member_views import save_member_view, workout_payload
+from tracker.ui.catalog import send_catalog
 from tracker.ui.embeds import build_setup_panel_embed, build_start_workout_embed
 
 log = logging.getLogger(__name__)
@@ -25,6 +26,7 @@ log = logging.getLogger(__name__)
 SETUP_PANEL_VIEW = "setup_panel"
 START_WORKOUT_VIEW = "start_workout"
 CREATE_FORUM_BUTTON = "workout:create-forum"
+CATALOG_BUTTON = "workout:exercise-catalog"
 START_WORKOUT_BUTTON = "workout:start"
 WORKOUT_SESSION_VIEW = "workout_session"
 WORKOUT_SESSION_BUTTON = "workout:session"
@@ -102,12 +104,13 @@ def build_setup_panel(state: str) -> discord.ui.View:
 
 
 class SetupPanelView(PersistentView):
-    """Button that creates one private workout forum for the member who clicks it."""
+    """Buttons that create a private forum and open the exercise catalog."""
 
     @discord.ui.button(
         label="Create my forum",
         style=discord.ButtonStyle.primary,
         custom_id=CREATE_FORUM_BUTTON,
+        row=0,
     )
     async def create_forum(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
         """Create this member's private forum, once per server.
@@ -178,6 +181,25 @@ class SetupPanelView(PersistentView):
             f"Your private forum is ready: {forum.mention}.{role_note}",
             ephemeral=True,
         )
+
+    @discord.ui.button(
+        emoji="⚙️",
+        style=discord.ButtonStyle.secondary,
+        custom_id=CATALOG_BUTTON,
+        row=0,
+    )
+    async def open_catalog(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        """Open this member's exercise categories.
+
+        Args:
+            interaction: Gear press on the setup panel.
+            button: The button that was pressed.
+
+        Returns:
+            None.
+        """
+        del button
+        await send_catalog(interaction)
 
 
 async def send_setup_panel(channel: discord.TextChannel) -> discord.Message:
